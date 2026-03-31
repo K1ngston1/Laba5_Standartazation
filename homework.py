@@ -340,6 +340,7 @@ class CodeAuditorApp:
         control_frame.pack(fill=tk.X, pady=5)
 
         ttk.Button(control_frame, text="Load File", command=self.load_file).pack(side=tk.LEFT, padx=5)
+        ttk.Button(control_frame, text="Load Example", command=self.load_example).pack(side=tk.LEFT, padx=5)   # <-- Нова кнопка
         ttk.Button(control_frame, text="Run Audit", command=self.run_audit).pack(side=tk.LEFT, padx=5)
         ttk.Button(control_frame, text="Export Results (JSON)", command=self.export_json).pack(side=tk.LEFT, padx=5)
         if HAS_REPORTLAB:
@@ -473,6 +474,32 @@ class CodeAuditorApp:
                 self.status.config(text=f"Loaded: {filename}")
             except Exception as e:
                 messagebox.showerror("Error", f"Could not load file: {e}")
+
+    def load_example(self):
+        """Завантажує приклад коду calculate_shipping у редактор."""
+        example_code = '''def calculate_shipping(weight, distance, is_vip):
+    base_rate = 50
+    if distance > 100:
+        multiplier = 1.5
+    else:
+        multiplier = 1.0
+
+    if weight > 20:
+        extra_charge = (weight - 20) * 5
+    else:
+        extra_charge = 0
+
+    total = (base_rate * multiplier) + extra_charge
+
+    if is_vip == True:
+        total = total * 0.8  # 20% знижка для VIP
+
+    return total
+'''
+        self.code_text.delete(1.0, tk.END)
+        self.code_text.insert(1.0, example_code)
+        self.source_code = example_code
+        self.status.config(text="Loaded example: calculate_shipping")
 
     def run_audit(self):
         # Get code from editor
