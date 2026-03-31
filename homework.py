@@ -293,18 +293,22 @@ class McCabeAnalyzer:
 
 
 # =============================================================================
-# Module 3: Chepin Informational Analysis
+# Module 3: Chepin Informational Analysis (with weights)
 # =============================================================================
 class ChepinAnalyzer:
     """
     Extracts variable names and allows classification.
-    Computes Q = (C + M) / (P + T) (if denominator > 0, else 0).
+    Computes Q = (sum(C) + sum(M)) / (sum(P) + sum(T)) using category weights.
     """
+    # Weights according to Chepin method
+    CATEGORY_WEIGHTS = {'P': 1, 'M': 2, 'C': 3, 'T': 0.5}
+
     def __init__(self, source_code):
         self.source_code = source_code
         self.variables = []   # list of variable names (unique)
         self.classifications = {}  # var -> category ('P','M','C','T')
-        self.Q = 0
+        self.Q = 0.0
+        self.weighted_sums = {'P': 0, 'M': 0, 'C': 0, 'T': 0}
 
     def extract_variables(self):
         try:
@@ -330,15 +334,15 @@ class ChepinAnalyzer:
             self._update_q()
 
     def _update_q(self):
-        counts = {'P':0, 'M':0, 'C':0, 'T':0}
-        for cat in self.classifications.values():
-            if cat in counts:
-                counts[cat] += 1
-        denom = counts['P'] + counts['T']
+        sums = {'P': 0, 'M': 0, 'C': 0, 'T': 0}
+        for var, cat in self.classifications.items():
+            sums[cat] += self.CATEGORY_WEIGHTS[cat]
+        self.weighted_sums = sums
+        denom = sums['P'] + sums['T']
         if denom > 0:
-            self.Q = (counts['C'] + counts['M']) / denom
+            self.Q = (sums['C'] + sums['M']) / denom
         else:
-            self.Q = 0
+            self.Q = 0.0
 
     def get_q(self):
         return self.Q
@@ -491,11 +495,13 @@ class CodeAuditorApp:
             ttk.Label(self.mccabe_frame, text="CFG visualization requires networkx and matplotlib.").pack()
 
     def _build_chepin_tab(self):
-        self.chepin_table = ttk.Treeview(self.chepin_frame, columns=("category",), show="tree headings")
+        self.chepin_table = ttk.Treeview(self.chepin_frame, columns=("category", "weight"), show="tree headings")
         self.chepin_table.heading("#0", text="Variable")
         self.chepin_table.heading("category", text="Category")
+        self.chepin_table.heading("weight", text="Weight")
         self.chepin_table.column("#0", width=200)
         self.chepin_table.column("category", width=100)
+        self.chepin_table.column("weight", width=60)
         self.chepin_table.pack(fill=tk.BOTH, expand=True, pady=5)
 
         self.q_label = ttk.Label(self.chepin_frame, text="Q = ")
@@ -525,29 +531,67 @@ class CodeAuditorApp:
                 messagebox.showerror("Error", f"Could not load file: {e}")
 
     def load_example(self):
-        example_code = '''def calculate_shipping(weight, distance, is_vip):
+        example_code = '''def calculate_shipping(weight, distance, shipping_type, client_status, is_fragile, warehouse_id):
+    trace_id = f"W{warehouse_id}-D{distance}"
     base_rate = 50
-    if distance > 100:
-        multiplier = 1.5
-    else:
+    final_cost = 0
+
+    if shipping_type == "EXPRESS":
+        multiplier = 2.5
+    elif shipping_type == "STANDARD":
         multiplier = 1.0
-
-    if weight > 20:
-        extra_charge = (weight - 20) * 5
     else:
-        extra_charge = 0
+        multiplier = 0.8
 
-    total = (base_rate * multiplier) + extra_charge
+    weight_fee = weight * 1.5
+    distance_fee = distance * 0.1
 
-    if is_vip == True:
-        total = total * 0.8
+    if is_fragile:
+        fragile_insurance = 100
+    else:
+        fragile_insurance = 0
 
-    return total
+    if client_status == "GOLD":
+        discount = 0.20
+    elif client_status == "SILVER":
+        discount = 0.10
+    else:
+        discount = 0
+
+    final_cost = (base_rate * multiplier) + weight_fee + distance_fee + fragile_insurance
+    final_cost = final_cost * (1 - discount)
+    return final_cost
 '''
         self.code_text.delete(1.0, tk.END)
         self.code_text.insert(1.0, example_code)
         self.source_code = example_code
         self.status.config(text="Loaded example: calculate_shipping")
+
+        # Run audit automatically
+        self.run_audit()
+
+        # Pre-classify variables according to Chepin table
+        if self.chepin:
+            classifications = {
+                'weight': 'P',
+                'distance': 'P',
+                'shipping_type': 'C',
+                'client_status': 'C',
+                'is_fragile': 'C',
+                'warehouse_id': 'T',
+                'trace_id': 'T',
+                'multiplier': 'M',
+                'base_rate': 'M',
+                'weight_fee': 'M',
+                'distance_fee': 'M',
+                'fragile_insurance': 'M',
+                'discount': 'M',
+                'final_cost': 'M'
+            }
+            for var, cat in classifications.items():
+                if var in self.chepin.classifications:
+                    self.chepin.set_classification(var, cat)
+            self._update_chepin_tab()
 
     def run_audit(self):
         self.source_code = self.code_text.get(1.0, tk.END)
@@ -641,7 +685,8 @@ class CodeAuditorApp:
 
         for var in self.chepin.variables:
             cat = self.chepin.classifications.get(var, 'T')
-            self.chepin_table.insert("", tk.END, text=var, values=(cat,))
+            weight = ChepinAnalyzer.CATEGORY_WEIGHTS.get(cat, 0)
+            self.chepin_table.insert("", tk.END, text=var, values=(cat, weight))
 
         self.q_label.config(text=f"Q = {self.chepin.get_q():.3f}")
 
@@ -679,7 +724,28 @@ class CodeAuditorApp:
             rec = "Refactoring Required"
             color = "red"
 
-        self.report_text.insert(tk.END, f"Recommendation: {rec}\n", "rec")
+        self.report_text.insert(tk.END, f"Recommendation: {rec}\n\n", "rec")
+
+        # --- Chepin specific analysis ---
+        self.report_text.insert(tk.END, "--- Chepin Analysis ---\n\n")
+
+        sums = self.chepin.weighted_sums
+        total_c = sums['C']
+        total_m = sums['M']
+        if total_c + total_m > 0:
+            if total_c > total_m:
+                self.report_text.insert(tk.END, f"Найбільший внесок у Q зробили керуючі змінні (C) — {total_c} балів. Це означає {len([v for v,cat in self.chepin.classifications.items() if cat=='C'])} керуючих гілок, що ускладнює тестування (комбінаторний вибух).\n")
+            else:
+                self.report_text.insert(tk.END, f"Найбільший внесок у Q зробили модифіковані змінні (M) — {total_m} балів. Функція перевантажена проміжними розрахунками, кожна зміна потребує перевірки всіх обчислень.\n")
+        else:
+            self.report_text.insert(tk.END, "Немає керуючих або модифікованих змінних.\n")
+
+        # Prediction: add a new control variable
+        new_q = (sums['C'] + sums['M'] + 3) / (sums['P'] + sums['T']) if (sums['P'] + sums['T']) > 0 else 0
+        self.report_text.insert(tk.END, f"\nПрогноз підтримки: якщо додати нову керуючу змінну (наприклад, 'order_total' для безкоштовної доставки), Q зросте з {self.chepin.Q:.2f} до {new_q:.2f}. Це збільшить складність тестування та час на внесення змін.\n")
+
+        # Optimization suggestion
+        self.report_text.insert(tk.END, "\nРекомендована оптимізація: декомпозиція функції на окремі підфункції (get_multiplier, get_insurance, get_discount). Це дозволить зменшити Q основної функції до ~2–3, ізолювати тестування та спростити супровід.\n")
 
         self.report_text.tag_config("header", font=("TkDefaultFont", 14, "bold"))
         self.report_text.tag_config("rec", foreground=color, font=("TkDefaultFont", 12, "bold"))
@@ -697,7 +763,11 @@ class CodeAuditorApp:
                 "decision_points_count": len(self.mccabe.decision_points),
                 "test_cases": self.mccabe.test_cases
             },
-            "Chepin": {"Q": self.chepin.get_q(), "classifications": self.chepin.classifications},
+            "Chepin": {
+                "Q": self.chepin.get_q(),
+                "classifications": self.chepin.classifications,
+                "weighted_sums": self.chepin.weighted_sums
+            },
             "Recommendation": "Release Recommended" if (self.mccabe.get_vg() <= 10 and self.halstead.bugs < 0.5) else "Refactoring Required"
         }
         filename = filedialog.asksaveasfilename(defaultextension=".json", filetypes=[("JSON", "*.json")])
