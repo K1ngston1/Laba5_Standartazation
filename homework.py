@@ -8,15 +8,22 @@ import sys
 import os
 import itertools
 
-# Optional imports for advanced features
+# Try to import networkx
 try:
     import networkx as nx
-    import matplotlib.pyplot as plt
-    from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
     HAS_NETWORKX = True
 except ImportError:
     HAS_NETWORKX = False
 
+# Try to import matplotlib
+try:
+    import matplotlib.pyplot as plt
+    from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+    HAS_MATPLOTLIB = True
+except ImportError:
+    HAS_MATPLOTLIB = False
+
+# Try to import reportlab
 try:
     from reportlab.lib.pagesizes import letter
     from reportlab.pdfgen import canvas
@@ -429,9 +436,13 @@ class CodeAuditorApp:
         self.status.pack(fill=tk.X, side=tk.BOTTOM, pady=2)
 
     def _build_halstead_tab(self):
+        # Top part: metrics tables and summary
+        top_frame = ttk.Frame(self.halstead_frame)
+        top_frame.pack(fill=tk.BOTH, expand=True, pady=5)
+
         # Left: tables of operators and operands
-        left_frame = ttk.Frame(self.halstead_frame)
-        left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5, pady=5)
+        left_frame = ttk.Frame(top_frame)
+        left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5)
 
         ttk.Label(left_frame, text="Operators (unique)").pack(anchor=tk.W)
         self.operators_tree = ttk.Treeview(left_frame, columns=("count",), show="tree headings", height=10)
@@ -446,8 +457,8 @@ class CodeAuditorApp:
         self.operands_tree.pack(fill=tk.BOTH, expand=True)
 
         # Right: metrics summary
-        right_frame = ttk.Frame(self.halstead_frame)
-        right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, padx=5, pady=5)
+        right_frame = ttk.Frame(top_frame)
+        right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, padx=5)
 
         self.halstead_labels = {}
         metrics = ["n1", "N1", "n2", "N2", "Volume", "Difficulty", "Effort", "Estimated Bugs (B)"]
@@ -457,6 +468,11 @@ class CodeAuditorApp:
             val_lbl = ttk.Label(right_frame, text="")
             val_lbl.grid(row=i, column=1, sticky=tk.W, padx=10)
             self.halstead_labels[m] = val_lbl
+
+        # Bottom part: Graph frame (replaces CFG)
+        graph_frame = ttk.LabelFrame(self.halstead_frame, text="Halstead Graph", padding="5")
+        graph_frame.pack(fill=tk.BOTH, expand=True, pady=5)
+        self.halstead_graph_frame = graph_frame
 
     def _build_mccabe_tab(self):
         # V(G) display
@@ -486,16 +502,17 @@ class CodeAuditorApp:
         self.test_tree.column("expected_path", width=200)
         self.test_tree.pack(fill=tk.BOTH, expand=True)
 
-        # CFG canvas (if networkx available)
-        if HAS_NETWORKX:
-            ttk.Label(self.mccabe_frame, text="Control Flow Graph (first function):").pack(anchor=tk.W, pady=(10,0))
-            self.cfg_canvas_frame = ttk.Frame(self.mccabe_frame)
-            self.cfg_canvas_frame.pack(fill=tk.BOTH, expand=True, pady=5)
-        else:
-            ttk.Label(self.mccabe_frame, text="CFG visualization requires networkx and matplotlib.").pack()
+        # CFG frame
+        cfg_frame = ttk.LabelFrame(self.mccabe_frame, text="Control Flow Graph", padding="5")
+        cfg_frame.pack(fill=tk.BOTH, expand=True, pady=5)
+        self.cfg_canvas_frame = cfg_frame
 
     def _build_chepin_tab(self):
-        self.chepin_table = ttk.Treeview(self.chepin_frame, columns=("category", "weight"), show="tree headings")
+        # Top part: variable table and Q
+        top_frame = ttk.Frame(self.chepin_frame)
+        top_frame.pack(fill=tk.BOTH, expand=True, pady=5)
+
+        self.chepin_table = ttk.Treeview(top_frame, columns=("category", "weight"), show="tree headings")
         self.chepin_table.heading("#0", text="Variable")
         self.chepin_table.heading("category", text="Category")
         self.chepin_table.heading("weight", text="Weight")
@@ -504,10 +521,15 @@ class CodeAuditorApp:
         self.chepin_table.column("weight", width=60)
         self.chepin_table.pack(fill=tk.BOTH, expand=True, pady=5)
 
-        self.q_label = ttk.Label(self.chepin_frame, text="Q = ")
+        self.q_label = ttk.Label(top_frame, text="Q = ")
         self.q_label.pack(anchor=tk.W, pady=5)
 
         self.chepin_table.bind("<Double-1>", self.on_chepin_edit)
+
+        # Graph frame for Chepin
+        graph_frame = ttk.LabelFrame(self.chepin_frame, text="Variable Category Distribution", padding="5")
+        graph_frame.pack(fill=tk.BOTH, expand=True, pady=5)
+        self.chepin_graph_frame = graph_frame
 
     def _build_report_tab(self):
         self.report_text = tk.Text(self.report_frame, wrap=tk.WORD, height=10, font=("TkDefaultFont", 12))
@@ -616,6 +638,11 @@ class CodeAuditorApp:
             self.chepin.extract_variables()
             self._update_chepin_tab()
 
+            # Draw graphs
+            self._draw_halstead_graph()
+            self._draw_mccabe_cfg()
+            self._draw_chepin_graph()
+
             # Managerial report
             self._update_report()
 
@@ -623,6 +650,117 @@ class CodeAuditorApp:
         except Exception as e:
             messagebox.showerror("Analysis Error", str(e))
             self.status.config(text="Error during analysis.")
+
+    def _draw_halstead_graph(self):
+        if not HAS_MATPLOTLIB:
+            self._show_textual_message(self.halstead_graph_frame, "Install matplotlib for graphical view.")
+            return
+        # Clear existing widgets
+        for widget in self.halstead_graph_frame.winfo_children():
+            widget.destroy()
+        # Get top operators and operands
+        top_ops = self.halstead.operators.most_common(10)
+        top_opds = self.halstead.operands.most_common(10)
+        if not top_ops and not top_opds:
+            self._show_textual_message(self.halstead_graph_frame, "No operators or operands found.")
+            return
+
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(8, 4))
+        if top_ops:
+            ops_labels, ops_counts = zip(*top_ops)
+            ax1.bar(ops_labels, ops_counts)
+            ax1.set_title("Top Operators")
+            ax1.tick_params(axis='x', rotation=45)
+        else:
+            ax1.set_title("No operators")
+        if top_opds:
+            opd_labels, opd_counts = zip(*top_opds)
+            ax2.bar(opd_labels, opd_counts)
+            ax2.set_title("Top Operands")
+            ax2.tick_params(axis='x', rotation=45)
+        else:
+            ax2.set_title("No operands")
+        fig.tight_layout()
+        canvas = FigureCanvasTkAgg(fig, master=self.halstead_graph_frame)
+        canvas.draw()
+        canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+
+    def _draw_mccabe_cfg(self):
+        if HAS_NETWORKX and HAS_MATPLOTLIB and self.mccabe.cfg is not None:
+            self._draw_cfg_in_frame(self.cfg_canvas_frame, self.mccabe.cfg, self.mccabe.node_labels)
+        else:
+            desc = self._describe_cfg_textually()
+            self._show_textual_cfg(self.cfg_canvas_frame, desc)
+
+    def _draw_chepin_graph(self):
+        if not HAS_MATPLOTLIB:
+            self._show_textual_message(self.chepin_graph_frame, "Install matplotlib for graphical view.")
+            return
+        for widget in self.chepin_graph_frame.winfo_children():
+            widget.destroy()
+        # Count categories
+        counts = {'P': 0, 'M': 0, 'C': 0, 'T': 0}
+        for cat in self.chepin.classifications.values():
+            counts[cat] += 1
+        # Filter out zero counts
+        labels = [k for k, v in counts.items() if v > 0]
+        sizes = [v for v in counts.values() if v > 0]
+        if not sizes:
+            self._show_textual_message(self.chepin_graph_frame, "No variables classified.")
+            return
+        fig, ax = plt.subplots(figsize=(5, 4))
+        ax.pie(sizes, labels=labels, autopct='%1.1f%%', startangle=90)
+        ax.set_title("Variable Categories Distribution")
+        canvas = FigureCanvasTkAgg(fig, master=self.chepin_graph_frame)
+        canvas.draw()
+        canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+
+    def _draw_cfg_in_frame(self, frame, G, labels=None):
+        """Draw the CFG in the given frame using matplotlib and networkx."""
+        # Clear existing widgets
+        for widget in frame.winfo_children():
+            widget.destroy()
+        fig, ax = plt.subplots(figsize=(6, 4))
+        pos = nx.spring_layout(G, seed=42)
+        nx.draw_networkx_nodes(G, pos, ax=ax, node_color='lightblue', node_size=800)
+        if labels is None:
+            labels = {n: str(n) for n in G.nodes()}
+        nx.draw_networkx_labels(G, pos, labels=labels, ax=ax)
+        nx.draw_networkx_edges(G, pos, ax=ax, edge_color='gray', arrows=True, arrowsize=20)
+        ax.set_title("Control Flow Graph")
+        canvas = FigureCanvasTkAgg(fig, master=frame)
+        canvas.draw()
+        canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+
+    def _show_textual_cfg(self, frame, description):
+        """Show a textual description of the CFG."""
+        for widget in frame.winfo_children():
+            widget.destroy()
+        text_widget = tk.Text(frame, wrap=tk.WORD, height=10, font=("Courier", 10))
+        text_widget.insert(tk.END, description)
+        text_widget.config(state=tk.DISABLED)
+        text_widget.pack(fill=tk.BOTH, expand=True)
+
+    def _show_textual_message(self, frame, message):
+        """Show a textual message in a frame."""
+        for widget in frame.winfo_children():
+            widget.destroy()
+        label = ttk.Label(frame, text=message, justify=tk.CENTER)
+        label.pack(expand=True)
+
+    def _describe_cfg_textually(self):
+        """Generate a textual description of the CFG if networkx is missing."""
+        if not self.mccabe.decision_points:
+            return "No decision points - single linear path.\n"
+        lines = ["Control Flow Graph (textual representation):\n"]
+        lines.append("Nodes correspond to statements; edges represent control flow.\n")
+        lines.append("Decision points (branches) are marked as nodes with conditions.\n")
+        for i, node in enumerate(self.mccabe.decision_points, 1):
+            condition = ast.unparse(node)
+            lines.append(f"  Decision {i}: {condition}\n")
+        lines.append("\nTest cases are based on these decisions (see Test Cases table).\n")
+        lines.append("For a graphical view, install networkx and matplotlib.")
+        return "".join(lines)
 
     def _update_halstead_tab(self):
         for item in self.operators_tree.get_children():
@@ -658,27 +796,6 @@ class CodeAuditorApp:
         for tc in self.mccabe.test_cases:
             self.test_tree.insert("", tk.END, values=(tc["id"], tc["description"], tc["suggested_input"], tc["expected_path"]))
 
-        # Draw CFG if available
-        if HAS_NETWORKX and self.mccabe.cfg:
-            self._draw_cfg(self.mccabe.cfg)
-
-    def _draw_cfg(self, G):
-        for widget in self.cfg_canvas_frame.winfo_children():
-            widget.destroy()
-
-        fig, ax = plt.subplots(figsize=(6,4))
-        pos = nx.spring_layout(G, seed=42)
-        nx.draw_networkx_nodes(G, pos, ax=ax, node_color='lightblue', node_size=800)
-        labels = nx.get_node_attributes(G, 'label')
-        if not labels:
-            labels = {n: str(n) for n in G.nodes()}
-        nx.draw_networkx_labels(G, pos, labels=labels, ax=ax)
-        nx.draw_networkx_edges(G, pos, ax=ax, edge_color='gray', arrows=True, arrowsize=20)
-        ax.set_title("Control Flow Graph")
-        canvas = FigureCanvasTkAgg(fig, master=self.cfg_canvas_frame)
-        canvas.draw()
-        canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
-
     def _update_chepin_tab(self):
         for item in self.chepin_table.get_children():
             self.chepin_table.delete(item)
@@ -701,6 +818,7 @@ class CodeAuditorApp:
     def _set_category(self, var, cat):
         self.chepin.set_classification(var, cat)
         self._update_chepin_tab()
+        self._draw_chepin_graph()  # update graph when category changes
 
     def _update_report(self):
         vg = self.mccabe.get_vg()
